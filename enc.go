@@ -28,48 +28,24 @@ func getKeyByEmail(keyring openpgp.EntityList, email string) *openpgp.Entity {
   return nil
 }
 
-func getOtherKeyByEmail(keyring openpgp.EntityList, email string) *openpgp.Entity {
-  for _, entity := range keyring {
-    for _, ident := range entity.Identities {
-      if ident.UserId.Email == email {
-        return entity
-      }
-    }
-  }
-
-  return nil
-}
-
-const mySecretString = "this is so very secret!"
-const prefix, passphrase = "/Users/michaelbaker/", "1234"
-const secretKeyring = prefix + ".gnupg/secring.gpg"
-const publicKeyring = prefix + ".gnupg/pubring.gpg"
-
-func encTest(secretString string) (string, error) {
-    log.Println("Secret to hide:", secretString)
-    log.Println("Public Keyring:", publicKeyring)
+func encryptPassword(password string, email string) (string, error) {
+    homeDir := os.Getenv("HOME") // *nix
+    secretKeyring := homeDir + "/.gnupg/secring.gpg"
+    publicKeyring := homeDir + "/.gnupg/pubring.gpg"
 
     // Read in public key
     keyringFileBuffer, _ := os.Open(publicKeyring)
     defer keyringFileBuffer.Close()
-    //entityList, err := openpgp.ReadKeyRing(keyringFileBuffer)
-    //if err != nil {
-    //    return "", err
-    //}
-
-    //pubringFile, _ := os.Open("pubring.gpg")
-    //pubring, _ := openpgp.ReadKeyRing(pubringFile)
-    privringFile, _ := os.Open("secring.gpg")
+    privringFile, _ := os.Open(secretKeyring)
     privring, _ := openpgp.ReadKeyRing(privringFile)
     // encrypt string
     buf := new(bytes.Buffer)
-    myPrivateKey := getKeyByEmail(privring, "michael.baker@bulletproof.net")
-    //theirPublicKey := getKeyByEmail(pubring, "no-reply@bulletproof.net")
+    myPrivateKey := getKeyByEmail(privring, email)
     w, err := openpgp.Encrypt(buf, []*openpgp.Entity{myPrivateKey}, nil, nil, nil)
     if err != nil {
         return "", err
     }
-    _, err = w.Write([]byte(mySecretString))
+    _, err = w.Write([]byte(password))
     if err != nil {
         return "", err
     }
@@ -85,34 +61,32 @@ func encTest(secretString string) (string, error) {
     }
     encStr := base64.StdEncoding.EncodeToString(bytes)
 
-    // Output encrypted/encoded string
-    log.Println("Encrypted Secret:", encStr)
-
     return encStr, nil
 }
 
-func decTest(encString string) (string, error) {
+func decryptPassword(encString string, email string) (string, error) {
+    homeDir := os.Getenv("HOME") // *nix
+    secretKeyring := homeDir + "/.gnupg/secring.gpg"
     conn, err := gpgagent.NewGpgAgentConn()
     if err != nil {
        panic(err)
     }
     defer conn.Close()
 
-	privringFile, err := os.Open(os.ExpandEnv("$HOME/.gnupg/secring.gpg"))
-	if err != nil {
-		panic(err)
-	}
-	privring, err := openpgp.ReadKeyRing(privringFile)
-	if err != nil {
-		panic(err)
-	} 
-   myPrivateKey := getKeyByEmail(privring, "michael.baker@bulletproof.net")
+    privringFile, _ := os.Open(secretKeyring)
+    if err != nil {
+	panic(err)
+    }
+    defer privringFile.Close()
+    privring, err := openpgp.ReadKeyRing(privringFile)
+    if err != nil {
+	panic(err)
+    } 
+    myPrivateKey := getKeyByEmail(privring, email)
     keyId   := []byte(myPrivateKey.PrivateKey.KeyIdString())
     cacheId := strings.ToUpper(hex.EncodeToString(keyId))
     request := gpgagent.PassphraseRequest{CacheKey: cacheId}
-    passphrasenew, err := conn.GetPassphrase(&request)
-    log.Println("Secret Keyring:", secretKeyring)
-    log.Println("Passphrase:", passphrase)
+    passphrase, err := conn.GetPassphrase(&request)
 
     // init some vars
     var entity *openpgp.Entity
@@ -130,23 +104,17 @@ func decTest(encString string) (string, error) {
     }
     entity = entityList[0]
 
-    // Get the passphrase and read the private key.
-    // Have not touched the encrypted string yet
-    passphraseByte := []byte(passphrasenew)
-    log.Println("Decrypting private key using passphrase")
+    passphraseByte := []byte(passphrase)
     entity.PrivateKey.Decrypt(passphraseByte)
     for _, subkey := range entity.Subkeys {
         subkey.PrivateKey.Decrypt(passphraseByte)
     }
-    log.Println("Finished decrypting private key using passphrase")
 
-    // Decode the base64 string
     dec, err := base64.StdEncoding.DecodeString(encString)
     if err != nil {
         return "", err
     }
 
-    // Decrypt it with the contents of the private key
     md, err := openpgp.ReadMessage(bytes.NewBuffer(dec), entityList, nil, nil)
     if err != nil {
         return "", err
@@ -161,11 +129,11 @@ func decTest(encString string) (string, error) {
 }
 
 func main() {
-    encStr, err := encTest(mySecretString)
+    encStr, err := encryptPassword("test", "michael.baker@bulletproof.net")
     if err != nil {
         log.Fatal(err)
     }
-    decStr, err := decTest(encStr)
+    decStr, err := decryptPassword(encStr, "michael.baker@bulletproof.net")
     if err != nil {
         log.Fatal(err)
     }
